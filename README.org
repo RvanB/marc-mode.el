@@ -1,0 +1,68 @@
+#+TITLE: marc-mode.el - MARC Records Major Mode for Emacs
+#+AUTHOR: Raiden van Bronkhorst
+
+* About
+
+A GNU Emacs major mode for editing MARC (Machine-Readable Cataloging) records.
+
+* Features
+
+- *Syntax highlighting* for MARC tags (e.g., ~=245~, ~=100~) and subfield codes (e.g., ~$a~, ~$b~)
+- *Automatic format conversion* between binary MARC (~.mrc~) and human-readable MRK format
+- *Seamless editing* - open binary ~.mrc~ files directly in Emacs and they're automatically converted to editable MRK format
+- *Background saving* - changes are automatically saved back to binary MARC format
+- *Integration* with MarcEdit command-line tools for reliable format conversion
+
+* Installation
+
+** Prerequisites
+
+This mode requires [[https://marcedit.reeset.net/][MarcEdit]] command-line tools to be installed. By default, the package will look for ~cmarcedit~, but this can be customized to point to the correct MarcEdit executable (see usage section below).
+
+** Manual Installation
+
+1. Download ~marc-mode.el~
+2. Place it in your Emacs ~load-path~
+3. Add to your init file:
+
+#+BEGIN_SRC elisp
+(require 'marc-mode)
+#+END_SRC
+
+* Usage
+
+** Opening MARC files
+
+- *MRK files* (~.mrk~) :: Open directly - syntax highlighting is applied automatically
+- *Binary MARC files* (~.mrc~) :: Open directly - automatically converted to editable MRK format
+
+** Editing
+
+The mode provides syntax highlighting for:
+- MARC tags (e.g., ~=245~, ~=100~) - highlighted as keywords
+- Subfield codes (e.g., ~$a~, ~$b~) - highlighted as variables
+
+** Saving
+
+- When editing converted ~.mrc~ files, saving automatically converts back to binary MARC format in the background
+- The original binary file is updated while you continue editing the readable MRK version
+
+* Configuration
+
+** Custom MarcEdit command
+
+If ~cmarcedit~ is not in your PATH or you want to use a different MARC conversion tool:
+
+#+BEGIN_SRC elisp
+(setq marc-edit-command "/path/to/your/cmarcedit")
+#+END_SRC
+
+** Custom faces
+
+Customize the appearance of MARC elements:
+
+#+BEGIN_SRC elisp
+(custom-set-faces
+ '(marc-tag-face ((t (:foreground "blue" :weight bold))))
+ '(marc-subfield-face ((t (:foreground "green")))))
+#+END_SRC
