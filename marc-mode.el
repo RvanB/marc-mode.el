@@ -62,12 +62,153 @@ If nil, .mrc files will be opened as binary files."
            (out-of-sync (and mrk-time mrc-time (time-less-p mrc-time mrk-time))))
       (if out-of-sync " [MRC-STALE]" " [MRC-SYNC]"))))
 
-(defvar marc-mode-map
+(defun marc-extract-field-value (field-tag &optional subfield-code)
+  "Extract the value of FIELD-TAG from the current MARC record.
+If SUBFIELD-CODE is provided (e.g., \"a\"), extract only that specific subfield."
+  (save-excursion
+    (let ((field-values nil)
+          (record-start (save-excursion
+                          (re-search-backward "^=LDR" nil t)
+                          (point)))
+          (record-end (save-excursion
+                        (forward-line)
+                        (if (re-search-forward "^=LDR" nil t)
+                            (progn (beginning-of-line) (point))
+                          (point-max)))))
+      (goto-char record-start)
+      (while (re-search-forward (format "^=%s\\(.*\\)$" field-tag) record-end t)
+        (let ((field-content (match-string 1)))
+          (if subfield-code
+              ;; Extract specific subfield
+              (let ((subfield-values nil)
+                    (start 0))
+                (while (string-match (format "\\$%s\\([^$]+\\)" subfield-code) field-content start)
+                  (push (match-string 1 field-content) subfield-values)
+                  (setq start (match-end 0)))
+                (when subfield-values
+                  (push (mapconcat 'identity (nreverse subfield-values) "; ") field-values)))
+            ;; Return entire field
+            (push field-content field-values))))
+      (nreverse field-values))))
+
+(defun marc-buffer-extract-fields (tag buffer-name &optional subfield)
+  "Extract all occurrences of TAG field from MARC records and display in BUFFER-NAME.
+If SUBFIELD is provided, extract only that specific subfield (e.g., \"a\")."
+  (let* ((results-buffer (get-buffer-create buffer-name))
+         (source-buffer (current-buffer))
+         (field-count 0))
+    
+    ;; Initialize results buffer
+    (with-current-buffer results-buffer
+      (marc-extraction-results-mode)
+      (setq-local marc-source-buffer source-buffer)
+      (setq-local marc-extracted-tag tag)
+      (setq-local marc-extracted-subfield subfield)
+      (let ((inhibit-read-only t))
+        (erase-buffer)))
+    
+    ;; Define the recursive extractor that safely handles timers
+    (let* ((next-pos (with-current-buffer source-buffer
+                       (save-excursion
+                         (goto-char (point-min))
+                         (point))))
+           (rb results-buffer)  ;; Create a lexical binding for results-buffer
+           (sb source-buffer)   ;; Create a lexical binding for source-buffer
+           ;; Create the extraction function with proper lexical scope
+           (extract-record 
+            (lambda (pos)
+              (with-current-buffer sb
+                (save-excursion
+                  (goto-char pos)
+                  ;; Move to a record if not already at one
+                  (unless (looking-at "^=LDR")
+                    (if (re-search-forward "^=LDR" nil t)
+                        (beginning-of-line)
+                      (goto-char (point-max))))
+                  
+                  ;; Process the record if we found one
+                  (when (looking-at "^=LDR")
+                    (let ((values (marc-extract-field-value tag subfield)))
+                      (when values
+                        (with-current-buffer rb
+                          (let ((inhibit-read-only t))
+                            (goto-char (point-max))
+                            (dolist (value values)
+                              (insert value "\n")
+                              (setq field-count (1+ field-count)))))))
+                    
+                    ;; Move to next position for future processing
+                    (forward-line)
+                    (if (re-search-forward "^=LDR" nil t)
+                        (progn
+                          (beginning-of-line)
+                          ;; Return position for next call
+                          (point))
+                      nil)))))))
+      
+      ;; The worker function that processes one record at a time
+      (letrec ((worker
+                (lambda ()
+                  (when next-pos
+                    (setq next-pos (funcall extract-record next-pos))
+                    (if next-pos
+                        (run-with-timer 0.01 nil worker)
+                      ;; No more records, we're done
+                      (with-current-buffer rb
+                        (goto-char (point-min))))))))
+        ;; Start the extraction process
+        (funcall worker)))
+    
+    ;; Show the results buffer and return it
+    (pop-to-buffer results-buffer)
+    results-buffer))
+
+(defun marc-extract-fields (tag)
+  "Extract all occurrences of TAG field from current MARC file.
+Results are displayed in a separate buffer."
+  (interactive "sExtract field tag (use tag$subfield for specific subfield, e.g. 245$a): ")
+  (if (not (derived-mode-p 'marc-mode))
+      (message "Not in a MARC buffer")
+    (let* ((parts (split-string tag "\\$"))
+           (field-tag (car parts))
+           (subfield (when (> (length parts) 1) (cadr parts)))
+           (buffer-name (format "*MARC Fields %s%s from %s*" 
+                              field-tag
+                              (if subfield (format "$%s" subfield) "")
+                              (buffer-name))))
+      (marc-buffer-extract-fields field-tag buffer-name subfield))))
+
+(define-derived-mode marc-extraction-results-mode special-mode "MARC Fields"
+  "Major mode for displaying extracted MARC fields.
+
+\\{marc-extraction-results-mode-map}"
+  (setq buffer-read-only t)
+  (setq truncate-lines nil)
+  (setq header-line-format 
+        (format "MARC Field Extraction Results [%s%s]" 
+                (if (boundp 'marc-extracted-tag) marc-extracted-tag "unknown")
+                (if (and (boundp 'marc-extracted-subfield) marc-extracted-subfield)
+                    (format "$%s" marc-extracted-subfield) "")))
+  (goto-char (point-min)))
+
+(defvar marc-extraction-results-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-s") 'marc-save-to-binary)
-    (define-key map (kbd "C-c C-j") 'marc-jump-to-original)
+    (define-key map (kbd "q") 'quit-window)
+    (define-key map (kbd "g") 'marc-refresh-extracted-fields)
     map)
-  "Keymap for MARC mode.")
+  "Keymap for MARC extraction results mode.")
+
+(defun marc-refresh-extracted-fields ()
+  "Refresh the extracted fields from the source buffer."
+  (interactive)
+  (if (and (boundp 'marc-source-buffer) 
+           (buffer-live-p marc-source-buffer)
+           (boundp 'marc-extracted-tag))
+      (marc-buffer-extract-fields 
+       marc-extracted-tag 
+       (buffer-name)
+       (when (boundp 'marc-extracted-subfield) marc-extracted-subfield))
+    (message "Cannot refresh: source information not available")))
 
 ;;;###autoload
 (define-derived-mode marc-mode text-mode "MARC"
@@ -76,6 +217,9 @@ If nil, .mrc files will be opened as binary files."
 Key bindings:
 \\[marc-save-to-binary] - Save MRK buffer to binary MARC file
 \\[marc-jump-to-original] - Jump to original .mrc file location
+\\[marc-next-record] - Move to next MARC record
+\\[marc-previous-record] - Move to previous MARC record
+\\[marc-extract-fields] - Extract field values across all records
 
 \\{marc-mode-map}"
   (setq font-lock-defaults '(marc-font-lock-keywords))
@@ -245,3 +389,4 @@ Returns the path to the temporary MRK file."
 (marc-mode-setup)
 
 (provide 'marc-mode)
+;;; marc-mode.el ends here
