@@ -20,6 +20,20 @@
 
 (require 'cl-lib)
 
+;;; Constants
+
+(defconst marc-ldr-pattern "^=LDR"
+  "Regular expression pattern to match MARC leader fields.")
+
+(defconst marc-tag-pattern "^=[0-9A-Z][0-9A-Z][0-9A-Z]"
+  "Regular expression pattern to match MARC tag fields.")
+
+(defconst marc-subfield-pattern "$[a-z0-9]"
+  "Regular expression pattern to match MARC subfield codes.")
+
+(defconst marc-timer-delay 0.01
+  "Delay in seconds between asynchronous record processing operations.")
+
 ;;; Customization Variables and Faces
 
 (defgroup marc nil
@@ -54,23 +68,6 @@ If nil, .mrc files will be opened as binary files."
   `((,marc-tag-pattern . 'marc-tag-face)
     (,marc-subfield-pattern . 'marc-subfield-face))
   "Font lock keywords for MARC mode.")
-
-;;; Constants
-
-(defconst marc-ldr-pattern "^=LDR"
-  "Regular expression pattern to match MARC leader fields.")
-
-(defconst marc-tag-pattern "^=[0-9A-Z][0-9A-Z][0-9A-Z]"
-  "Regular expression pattern to match MARC tag fields.")
-
-(defconst marc-subfield-pattern "$[a-z0-9]"
-  "Regular expression pattern to match MARC subfield codes.")
-
-(defconst marc-timer-delay 0.01
-  "Delay in seconds between asynchronous record processing operations.")
-
-(defconst marc-auto-mrk-suffix "marc-auto-mrk-suffix"
-  "File suffix for automatically created MRK files.")
 
 ;;; Core MARC Parsing Utilities
 
@@ -341,7 +338,7 @@ Returns the path to the temporary MRK file."
 (defun marc-find-all-auto-mrk (mrc-file)
   "Find all .auto.mrk files for MRC-FILE, sorted by modification time (newest first)."
   (let* ((base (file-name-sans-extension mrc-file))
-         (candidates (list (concat base marc-auto-mrk-suffix)))
+         (candidates (list (concat base ".auto.mrk")))
          (counter 1))
     ;; Collect all .auto.N.mrk files
     (while (file-exists-p (format "%s.auto.%d.mrk" base counter))
@@ -356,7 +353,7 @@ Returns the path to the temporary MRK file."
 (defun marc-get-next-auto-mrk-file (mrc-file)
   "Get the next available .auto.mrk filename for MRC-FILE."
   (let* ((base (file-name-sans-extension mrc-file))
-         (auto-mrk (concat base marc-auto-mrk-suffix)))
+         (auto-mrk (concat base ".auto.mrk")))
     (if (not (file-exists-p auto-mrk))
         auto-mrk
       (let ((counter 1))
