@@ -20,6 +20,8 @@
 
 (require 'cl-lib)
 
+;;; Customization Variables and Faces
+
 (defgroup marc nil
   "Major mode for editing MARC records."
   :group 'text
@@ -49,34 +51,58 @@ If nil, .mrc files will be opened as binary files."
   :group 'marc)
 
 (defvar marc-font-lock-keywords
-  '(("^=[0-9A-Z][0-9A-Z][0-9A-Z]" . 'marc-tag-face)
-    ("$[a-z0-9]" . 'marc-subfield-face))
+  `((,marc-tag-pattern . 'marc-tag-face)
+    (,marc-subfield-pattern . 'marc-subfield-face))
   "Font lock keywords for MARC mode.")
+
+;;; Constants
+
+(defconst marc-ldr-pattern "^=LDR"
+  "Regular expression pattern to match MARC leader fields.")
+
+(defconst marc-tag-pattern "^=[0-9A-Z][0-9A-Z][0-9A-Z]"
+  "Regular expression pattern to match MARC tag fields.")
+
+(defconst marc-subfield-pattern "$[a-z0-9]"
+  "Regular expression pattern to match MARC subfield codes.")
+
+(defconst marc-timer-delay 0.01
+  "Delay in seconds between asynchronous record processing operations.")
+
+(defconst marc-auto-mrk-suffix "marc-auto-mrk-suffix"
+  "File suffix for automatically created MRK files.")
+
+;;; Core MARC Parsing Utilities
 
 (defun marc-mode-line-status ()
   "Return mode-line status indicator for MARC files."
   (when (and (boundp 'marc-is-converted) marc-is-converted
              (boundp 'marc-original-file) marc-original-file)
-    (let* ((mrk-time (nth 5 (file-attributes buffer-file-name)))
-           (mrc-time (nth 5 (file-attributes marc-original-file)))
-           (out-of-sync (and mrk-time mrc-time (time-less-p mrc-time mrk-time))))
-      (if out-of-sync " [MRC-STALE]" " [MRC-SYNC]"))))
+    (let* ((mrk-modification-time (nth 5 (file-attributes buffer-file-name)))
+           (mrc-modification-time (nth 5 (file-attributes marc-original-file)))
+           (mrc-out-of-sync (and mrk-modification-time mrc-modification-time 
+                                (time-less-p mrc-modification-time mrk-modification-time))))
+      (if mrc-out-of-sync " [MRC-STALE]" " [MRC-SYNC]"))))
 
 (defun marc-extract-field-value (field-tag &optional subfield-code)
   "Extract the value of FIELD-TAG from the current MARC record.
 If SUBFIELD-CODE is provided (e.g., \"a\"), extract only that specific subfield."
+  (unless (stringp field-tag)
+    (error "Field tag must be a string, got: %s" (type-of field-tag)))
+  (when (and subfield-code (not (stringp subfield-code)))
+    (error "Subfield code must be a string, got: %s" (type-of subfield-code)))
   (save-excursion
-    (let ((field-values nil)
-          (record-start (save-excursion
-                          (re-search-backward "^=LDR" nil t)
-                          (point)))
-          (record-end (save-excursion
-                        (forward-line)
-                        (if (re-search-forward "^=LDR" nil t)
-                            (progn (beginning-of-line) (point))
-                          (point-max)))))
-      (goto-char record-start)
-      (while (re-search-forward (format "^=%s\\(.*\\)$" field-tag) record-end t)
+    (let ((extracted-field-values nil)
+          (current-record-start (save-excursion
+                                  (re-search-backward marc-ldr-pattern nil t)
+                                  (point)))
+          (current-record-end (save-excursion
+                                (forward-line)
+                                (if (re-search-forward marc-ldr-pattern nil t)
+                                    (progn (beginning-of-line) (point))
+                                  (point-max)))))
+      (goto-char current-record-start)
+      (while (re-search-forward (format "^=%s\\(.*\\)$" field-tag) current-record-end t)
         (let ((field-content (match-string 1)))
           (if subfield-code
               ;; Extract specific subfield
@@ -86,78 +112,93 @@ If SUBFIELD-CODE is provided (e.g., \"a\"), extract only that specific subfield.
                   (push (match-string 1 field-content) subfield-values)
                   (setq start (match-end 0)))
                 (when subfield-values
-                  (push (mapconcat 'identity (nreverse subfield-values) "; ") field-values)))
+                  (push (mapconcat 'identity (nreverse subfield-values) "; ") extracted-field-values)))
             ;; Return entire field
-            (push field-content field-values))))
-      (nreverse field-values))))
+            (push field-content extracted-field-values))))
+      (nreverse extracted-field-values))))
+
+(defun marc-initialize-extraction-buffer (results-buffer source-buffer tag subfield)
+  "Initialize RESULTS-BUFFER for field extraction display."
+  (with-current-buffer results-buffer
+    (marc-extraction-results-mode)
+    (setq-local marc-source-buffer source-buffer)
+    (setq-local marc-extracted-tag tag)
+    (setq-local marc-extracted-subfield subfield)
+    (let ((inhibit-read-only t))
+      (erase-buffer))))
+
+(defun marc-extract-single-record (pos tag subfield source-buffer results-buffer field-count)
+  "Extract fields from a single MARC record at POS.
+Returns the position of the next record or nil if no more records."
+  (with-current-buffer source-buffer
+    (save-excursion
+      (goto-char pos)
+      ;; Move to a record if not already at one
+      (unless (looking-at marc-ldr-pattern)
+        (if (re-search-forward marc-ldr-pattern nil t)
+            (beginning-of-line)
+          (goto-char (point-max))))
+      
+      ;; Process the record if we found one
+      (when (looking-at marc-ldr-pattern)
+        (let ((values (marc-extract-field-value tag subfield)))
+          (when values
+            (with-current-buffer results-buffer
+              (let ((inhibit-read-only t))
+                (goto-char (point-max))
+                (dolist (value values)
+                  (insert value "\n")
+                  (setq field-count (1+ field-count)))))))
+        
+        ;; Move to next position for future processing
+        (forward-line)
+        (if (re-search-forward marc-ldr-pattern nil t)
+            (progn
+              (beginning-of-line)
+              ;; Return position for next call
+              (point))
+          nil)))))
+
+(defun marc-process-records-async (source-buffer results-buffer tag subfield)
+  "Process all MARC records asynchronously using timers."
+  (let* ((next-pos (with-current-buffer source-buffer
+                     (save-excursion
+                       (goto-char (point-min))
+                       (point))))
+         (field-count 0))
+    
+    ;; The worker function that processes one record at a time
+    (letrec ((worker
+              (lambda ()
+                (when next-pos
+                  (setq next-pos (marc-extract-single-record 
+                                 next-pos tag subfield source-buffer 
+                                 results-buffer field-count))
+                  (if next-pos
+                      (run-with-timer marc-timer-delay nil worker)
+                    ;; No more records, we're done
+                    (with-current-buffer results-buffer
+                      (goto-char (point-min))))))))
+      ;; Start the extraction process
+      (funcall worker))))
 
 (defun marc-buffer-extract-fields (tag buffer-name &optional subfield)
   "Extract all occurrences of TAG field from MARC records and display in BUFFER-NAME.
 If SUBFIELD is provided, extract only that specific subfield (e.g., \"a\")."
+  (unless (stringp tag)
+    (error "Tag must be a string, got: %s" (type-of tag)))
+  (unless (stringp buffer-name)
+    (error "Buffer name must be a string, got: %s" (type-of buffer-name)))
+  (when (and subfield (not (stringp subfield)))
+    (error "Subfield must be a string, got: %s" (type-of subfield)))
   (let* ((results-buffer (get-buffer-create buffer-name))
-         (source-buffer (current-buffer))
-         (field-count 0))
+         (source-buffer (current-buffer)))
     
     ;; Initialize results buffer
-    (with-current-buffer results-buffer
-      (marc-extraction-results-mode)
-      (setq-local marc-source-buffer source-buffer)
-      (setq-local marc-extracted-tag tag)
-      (setq-local marc-extracted-subfield subfield)
-      (let ((inhibit-read-only t))
-        (erase-buffer)))
+    (marc-initialize-extraction-buffer results-buffer source-buffer tag subfield)
     
-    ;; Define the recursive extractor that safely handles timers
-    (let* ((next-pos (with-current-buffer source-buffer
-                       (save-excursion
-                         (goto-char (point-min))
-                         (point))))
-           (rb results-buffer)  ;; Create a lexical binding for results-buffer
-           (sb source-buffer)   ;; Create a lexical binding for source-buffer
-           ;; Create the extraction function with proper lexical scope
-           (extract-record 
-            (lambda (pos)
-              (with-current-buffer sb
-                (save-excursion
-                  (goto-char pos)
-                  ;; Move to a record if not already at one
-                  (unless (looking-at "^=LDR")
-                    (if (re-search-forward "^=LDR" nil t)
-                        (beginning-of-line)
-                      (goto-char (point-max))))
-                  
-                  ;; Process the record if we found one
-                  (when (looking-at "^=LDR")
-                    (let ((values (marc-extract-field-value tag subfield)))
-                      (when values
-                        (with-current-buffer rb
-                          (let ((inhibit-read-only t))
-                            (goto-char (point-max))
-                            (dolist (value values)
-                              (insert value "\n")
-                              (setq field-count (1+ field-count)))))))
-                    
-                    ;; Move to next position for future processing
-                    (forward-line)
-                    (if (re-search-forward "^=LDR" nil t)
-                        (progn
-                          (beginning-of-line)
-                          ;; Return position for next call
-                          (point))
-                      nil)))))))
-      
-      ;; The worker function that processes one record at a time
-      (letrec ((worker
-                (lambda ()
-                  (when next-pos
-                    (setq next-pos (funcall extract-record next-pos))
-                    (if next-pos
-                        (run-with-timer 0.01 nil worker)
-                      ;; No more records, we're done
-                      (with-current-buffer rb
-                        (goto-char (point-min))))))))
-        ;; Start the extraction process
-        (funcall worker)))
+    ;; Process all records asynchronously
+    (marc-process-records-async source-buffer results-buffer tag subfield)
     
     ;; Show the results buffer and return it
     (pop-to-buffer results-buffer)
@@ -177,6 +218,35 @@ Results are displayed in a separate buffer."
                               (if subfield (format "$%s" subfield) "")
                               (buffer-name))))
       (marc-buffer-extract-fields field-tag buffer-name subfield))))
+
+;;; Navigation Functions
+
+(defun marc-next-record ()
+  "Move to the beginning of the next MARC record.
+If `marc-auto-recenter' is non-nil, places the record's LDR line at the top."
+  (interactive)
+  (if (re-search-forward marc-ldr-pattern nil t)
+      (progn
+        (beginning-of-line)
+        (when marc-auto-recenter
+          (recenter 0)))
+    (message "No more records found")))
+
+(defun marc-previous-record ()
+  "Move to the beginning of the previous MARC record.
+If `marc-auto-recenter' is non-nil, places the record's LDR line at the top."
+  (interactive)
+  (beginning-of-line)
+  (when (looking-at marc-ldr-pattern)
+    (forward-char -1))
+  (if (re-search-backward "^=LDR" nil t)
+      (progn
+        (beginning-of-line)
+        (when marc-auto-recenter
+          (recenter 0)))
+    (message "No previous records found")))
+
+;;; Extraction Results Mode
 
 (define-derived-mode marc-extraction-results-mode special-mode "MARC Fields"
   "Major mode for displaying extracted MARC fields.
@@ -210,6 +280,8 @@ Results are displayed in a separate buffer."
        (when (boundp 'marc-extracted-subfield) marc-extracted-subfield))
     (message "Cannot refresh: source information not available")))
 
+;;; Major Mode Definition
+
 ;;;###autoload
 (define-derived-mode marc-mode text-mode "MARC"
   "Major mode for editing MARC records in MRK format.
@@ -230,11 +302,15 @@ Key bindings:
     (setq mode-line-format 
           (append mode-line-format '((:eval (marc-mode-line-status)))))))
 
-;; File conversion functions
+;;; File Conversion Functions
 
 (defun marc-mrc-to-mrk (filename)
   "Convert binary MARC file FILENAME to MRK format using MarcEdit.
 Returns the path to the temporary MRK file."
+  (unless (stringp filename)
+    (error "Filename must be a string, got: %s" (type-of filename)))
+  (unless (file-exists-p filename)
+    (error "File does not exist: %s" filename))
   (message "marc-mrc-to-mrk: Starting conversion of %s" filename)
   (let ((temp-file (make-temp-file "marc-" nil ".mrk")))
     (shell-command (format "%s -s %s -d %s -break" 
@@ -245,6 +321,12 @@ Returns the path to the temporary MRK file."
 
 (defun marc-mrk-to-mrc (mrk-file mrc-filename)
   "Convert MRK file to binary MARC file MRC-FILENAME using MarcEdit."
+  (unless (stringp mrk-file)
+    (error "MRK file must be a string, got: %s" (type-of mrk-file)))
+  (unless (stringp mrc-filename)
+    (error "MRC filename must be a string, got: %s" (type-of mrc-filename)))
+  (unless (file-exists-p mrk-file)
+    (error "MRK file does not exist: %s" mrk-file))
   (message "marc-mrk-to-mrc: Converting %s to %s" mrk-file mrc-filename)
   (let ((cmd (format "%s -s %s -d %s -make"
                     marc-edit-command
@@ -254,12 +336,12 @@ Returns the path to the temporary MRK file."
     (shell-command cmd)
     (message "marc-mrk-to-mrc: Conversion complete")))
 
-;; File handling hooks
+;;; File Handling Hooks
 
 (defun marc-find-all-auto-mrk (mrc-file)
   "Find all .auto.mrk files for MRC-FILE, sorted by modification time (newest first)."
   (let* ((base (file-name-sans-extension mrc-file))
-         (candidates (list (concat base ".auto.mrk")))
+         (candidates (list (concat base marc-auto-mrk-suffix)))
          (counter 1))
     ;; Collect all .auto.N.mrk files
     (while (file-exists-p (format "%s.auto.%d.mrk" base counter))
@@ -274,13 +356,26 @@ Returns the path to the temporary MRK file."
 (defun marc-get-next-auto-mrk-file (mrc-file)
   "Get the next available .auto.mrk filename for MRC-FILE."
   (let* ((base (file-name-sans-extension mrc-file))
-         (auto-mrk (concat base ".auto.mrk")))
+         (auto-mrk (concat base marc-auto-mrk-suffix)))
     (if (not (file-exists-p auto-mrk))
         auto-mrk
       (let ((counter 1))
         (while (file-exists-p (format "%s.auto.%d.mrk" base counter))
           (setq counter (1+ counter)))
         (format "%s.auto.%d.mrk" base counter)))))
+
+(defun marc-handle-conversion-error (err buffer-file-name)
+  "Handle errors during MARC file conversion."
+  (cond
+   ((eq (car err) 'quit)
+    (message "MARC conversion cancelled")
+    ;; Kill the buffer to ensure clean state next time
+    (kill-buffer (current-buffer))
+    (signal 'quit nil))
+   (t
+    (message "Error during MARC conversion of %s: %s" 
+             (file-name-nondirectory buffer-file-name) err)
+    (signal (car err) (cdr err)))))
 
 (defun marc-find-file-hook ()
   "Handle opening of .mrc files by converting to MRK format."
@@ -340,14 +435,7 @@ Returns the path to the temporary MRK file."
       (setq mode-line-format 
             (append mode-line-format '((:eval (marc-mode-line-status)))))
             (message "marc-find-file-hook: Setup complete for converted file")))
-      (quit 
-       (message "MARC conversion cancelled")
-       ;; Kill the buffer to ensure clean state next time
-       (kill-buffer (current-buffer))
-       (signal 'quit nil))
-      (error 
-       (message "Error during MARC conversion: %s" err)
-       (signal (car err) (cdr err))))))
+      (error (marc-handle-conversion-error err buffer-file-name)))))
 
 
 
@@ -376,7 +464,7 @@ Returns the path to the temporary MRK file."
       (dired-jump nil marc-original-file)
     (message "Not a converted MARC file")))
 
-;; Setup hooks and auto-mode-alist
+;;; Setup and Initialization
 
 ;;;###autoload
 (defun marc-mode-setup ()
