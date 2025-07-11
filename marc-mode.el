@@ -216,35 +216,7 @@ Results are displayed in a separate buffer."
                               (buffer-name))))
       (marc-buffer-extract-fields field-tag buffer-name subfield))))
 
-;;; Navigation Functions
-
-(defun marc-next-record ()
-  "Move to the beginning of the next MARC record.
-If `marc-auto-recenter' is non-nil, places the record's LDR line at the top."
-  (interactive)
-  (if (re-search-forward marc-ldr-pattern nil t)
-      (progn
-        (beginning-of-line)
-        (when marc-auto-recenter
-          (recenter 0)))
-    (message "No more records found")))
-
-(defun marc-previous-record ()
-  "Move to the beginning of the previous MARC record.
-If `marc-auto-recenter' is non-nil, places the record's LDR line at the top."
-  (interactive)
-  (beginning-of-line)
-  (when (looking-at marc-ldr-pattern)
-    (forward-char -1))
-  (if (re-search-backward "^=LDR" nil t)
-      (progn
-        (beginning-of-line)
-        (when marc-auto-recenter
-          (recenter 0)))
-    (message "No previous records found")))
-
 ;;; Extraction Results Mode
-
 (define-derived-mode marc-extraction-results-mode special-mode "MARC Fields"
   "Major mode for displaying extracted MARC fields.
 
