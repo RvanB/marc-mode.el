@@ -25,14 +25,23 @@
 
 ;;; Constants
 
-(defconst marc-ldr-pattern "^=LDR"
-  "Regular expression pattern to match MARC leader fields.")
+;; MRK format patterns (MarcEdit style: =245  04$aTitle)
+(defconst marc-mrk-tag-pattern "^=[0-9A-Z][0-9A-Z][0-9A-Z]"
+  "Regular expression pattern to match MRK tag fields.")
 
-(defconst marc-tag-pattern "^=[0-9A-Z][0-9A-Z][0-9A-Z]"
-  "Regular expression pattern to match MARC tag fields.")
+(defconst marc-mrk-subfield-pattern "\\$[a-z0-9]"
+  "Regular expression pattern to match MRK subfield codes.")
 
-(defconst marc-subfield-pattern "$[a-z0-9]"
-  "Regular expression pattern to match MARC subfield codes.")
+;; Line format patterns (yaz-marcdump style: 245 04 $a Title)
+(defconst marc-line-tag-pattern "^[0-9A-Z]\\{3\\} "
+  "Regular expression pattern to match line format tag fields.
+Requires a space after the tag to avoid matching the leader.")
+
+(defconst marc-line-indicator-pattern "^[0-9A-Z]\\{3\\} \\(..\\)"
+  "Regular expression pattern to match line format indicators.")
+
+(defconst marc-line-subfield-pattern "\\$[a-z0-9] "
+  "Regular expression pattern to match line format subfield codes.")
 
 ;;; Customization Variables and Faces
 
@@ -62,10 +71,15 @@ This should be the path to cmarcedit."
   "Face for MARC subfield codes (e.g., $a, $b)."
   :group 'marc)
 
-(defvar marc-font-lock-keywords
-  `((,marc-tag-pattern . 'marc-tag-face)
-    (,marc-subfield-pattern . 'marc-subfield-face))
-  "Font lock keywords for MARC mode.")
+(defvar marc-mrk-font-lock-keywords
+  `((,marc-mrk-tag-pattern . 'marc-tag-face)
+    (,marc-mrk-subfield-pattern . 'marc-subfield-face))
+  "Font lock keywords for MRK format.")
+
+(defvar marc-line-font-lock-keywords
+  `((,marc-line-tag-pattern . 'marc-tag-face)
+    (,marc-line-subfield-pattern . 'marc-subfield-face))
+  "Font lock keywords for line format.")
 
 ;;; File Conversion Functions
 
@@ -75,8 +89,7 @@ This should be the path to cmarcedit."
 (defun marc--shell-command (cmd)
   "Run CMD and display output in the echo area."
   (let ((output (string-trim (shell-command-to-string (concat cmd " 2>&1")))))
-    (if (string-empty-p output)
-        (message "marc: Done.")
+    (unless (string-empty-p output)
       (message "%s" output))))
 
 (defun marc--build-command (source &optional args)
@@ -369,22 +382,51 @@ ARGS are additional flags from the transient."
 
 ;;; Major Mode Definition
 
+(defun marc--display-mrc-as-line ()
+  "Convert .mrc file to a temp file in line format, display it, then clean up.
+The underlying file is not modified."
+  (let ((temp-file (marc-mrc-to-mrk buffer-file-name)))
+    (unwind-protect
+        (progn
+          (erase-buffer)
+          (insert-file-contents temp-file)
+          (goto-char (point-min))
+          (set-buffer-modified-p nil))
+      (delete-file temp-file))))
+
 ;;;###autoload
 (define-derived-mode marc-mode text-mode "MARC"
-  "Major mode for editing MARC records in MRK format.
+  "Base major mode for editing MARC records.
 
 Key bindings:
 \\{marc-mode-map}"
-  (setq font-lock-defaults '(marc-font-lock-keywords))
   (setq comment-start "")
   (setq comment-end ""))
+
+;;;###autoload
+(define-derived-mode marc-mrk-mode marc-mode "MARC/MRK"
+  "Major mode for editing MARC records in MRK format."
+  (setq font-lock-defaults '(marc-mrk-font-lock-keywords)))
+
+;;;###autoload
+(define-derived-mode marc-line-mode marc-mode "MARC/Line"
+  "Major mode for viewing MARC records in line format."
+  (setq font-lock-defaults '(marc-line-font-lock-keywords)))
+
+;;;###autoload
+(define-derived-mode marc-mrc-mode marc-line-mode "MARC/MRC"
+  "Major mode for viewing binary MARC (.mrc) files.
+Converts to line format for display. Buffer is read-only."
+  (marc--display-mrc-as-line)
+  (setq buffer-read-only t))
 
 ;;; Setup and Initialization
 
 ;;;###autoload
 (defun marc-mode-setup ()
   "Set up file associations for MARC mode."
-  (add-to-list 'auto-mode-alist '("\\.mrk\\'" . marc-mode)))
+  (add-to-list 'auto-mode-alist '("\\.mrk\\'" . marc-mrk-mode))
+  (add-to-list 'auto-mode-alist '("\\.mrc\\'" . marc-mrc-mode)))
 
 ;; Initialize when loaded
 (marc-mode-setup)
