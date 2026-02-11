@@ -218,12 +218,16 @@ Returns the path to the temporary MRK file."
   :shortarg "-l"
   :argument "-l ")
 
-(defun marc--yaz-do-convert (&optional args)
-  "Run the yaz-marcdump conversion with ARGS."
-  (interactive (list (transient-args 'marc-yaz-convert--transient)))
-  (unless (and marc--input-file marc--output-file)
-    (user-error "Input and output files not set"))
-  (marc--run-command marc--input-file marc--output-file args))
+(transient-define-suffix marc-yaz-convert-run ()
+  "Run the yaz-marcdump conversion."
+  :transient nil
+  :key "RET"
+  :description "Convert"
+  (interactive)
+  (let ((args (transient-args 'marc-yaz-convert--transient)))
+    (unless (and marc--input-file marc--output-file)
+      (user-error "Input and output files not set"))
+    (marc--run-command marc--input-file marc--output-file args)))
 
 (transient-define-prefix marc-yaz-convert--transient ()
   "Transient menu for yaz-marcdump conversion."
@@ -243,7 +247,7 @@ Returns the path to the temporary MRK file."
    ("-r" "Show summary" "-r")
    ("-p" "Print positions" "-p")]
   ["Actions"
-   ("RET" "Convert" marc--yaz-do-convert)
+   (marc-yaz-convert-run)
    ("q" "Quit" transient-quit-one)])
 
 ;;;###autoload
@@ -288,35 +292,65 @@ ARGS are additional flags from the transient."
                                        nil nil default-output))))
     (marc--marcedit-run-command input-file output-file algorithm args)))
 
-(defun marc--marcedit-break (&optional args)
-  "Run MarcBreaker (MARC -> MRK) with ARGS."
-  (interactive (list (transient-args 'marc-marcedit-convert)))
-  (marc--marcedit-get-files-and-convert "break" "MARC file" "mrc" "MRK file" "mrk" args))
+(transient-define-suffix marc-marcedit-break ()
+  "Run MarcBreaker (MARC -> MRK)."
+  :transient nil
+  :key "b"
+  :description "MarcBreaker (MARC -> MRK)"
+  (interactive)
+  (marc--marcedit-get-files-and-convert
+   "break" "MARC file" "mrc" "MRK file" "mrk"
+   (transient-args 'marc-marcedit-convert)))
 
-(defun marc--marcedit-make (&optional args)
-  "Run MarcMaker (MRK -> MARC) with ARGS."
-  (interactive (list (transient-args 'marc-marcedit-convert)))
-  (marc--marcedit-get-files-and-convert "make" "MRK file" "mrk" "MARC file" "mrc" args))
+(transient-define-suffix marc-marcedit-make ()
+  "Run MarcMaker (MRK -> MARC)."
+  :transient nil
+  :key "m"
+  :description "MarcMaker (MRK -> MARC)"
+  (interactive)
+  (marc--marcedit-get-files-and-convert
+   "make" "MRK file" "mrk" "MARC file" "mrc"
+   (transient-args 'marc-marcedit-convert)))
 
-(defun marc--marcedit-marcxml (&optional args)
-  "Run MARC -> MARCXML with ARGS."
-  (interactive (list (transient-args 'marc-marcedit-convert)))
-  (marc--marcedit-get-files-and-convert "marcxml" "MARC file" "mrc" "MARCXML file" "xml" args))
+(transient-define-suffix marc-marcedit-marcxml ()
+  "Run MARC -> MARCXML."
+  :transient nil
+  :key "x"
+  :description "MARC -> MARCXML"
+  (interactive)
+  (marc--marcedit-get-files-and-convert
+   "marcxml" "MARC file" "mrc" "MARCXML file" "xml"
+   (transient-args 'marc-marcedit-convert)))
 
-(defun marc--marcedit-xmlmarc (&optional args)
-  "Run MARCXML -> MARC with ARGS."
-  (interactive (list (transient-args 'marc-marcedit-convert)))
-  (marc--marcedit-get-files-and-convert "xmlmarc" "MARCXML file" "xml" "MARC file" "mrc" args))
+(transient-define-suffix marc-marcedit-xmlmarc ()
+  "Run MARCXML -> MARC."
+  :transient nil
+  :key "X"
+  :description "MARCXML -> MARC"
+  (interactive)
+  (marc--marcedit-get-files-and-convert
+   "xmlmarc" "MARCXML file" "xml" "MARC file" "mrc"
+   (transient-args 'marc-marcedit-convert)))
 
-(defun marc--marcedit-marc2json (&optional args)
-  "Run MARC -> JSON with ARGS."
-  (interactive (list (transient-args 'marc-marcedit-convert)))
-  (marc--marcedit-get-files-and-convert "marc2json" "MARC file" "mrc" "JSON file" "json" args))
+(transient-define-suffix marc-marcedit-marc2json ()
+  "Run MARC -> JSON."
+  :transient nil
+  :key "j"
+  :description "MARC -> JSON"
+  (interactive)
+  (marc--marcedit-get-files-and-convert
+   "marc2json" "MARC file" "mrc" "JSON file" "json"
+   (transient-args 'marc-marcedit-convert)))
 
-(defun marc--marcedit-json2marc (&optional args)
-  "Run JSON -> MARC with ARGS."
-  (interactive (list (transient-args 'marc-marcedit-convert)))
-  (marc--marcedit-get-files-and-convert "json2marc" "JSON file" "json" "MARC file" "mrc" args))
+(transient-define-suffix marc-marcedit-json2marc ()
+  "Run JSON -> MARC."
+  :transient nil
+  :key "J"
+  :description "JSON -> MARC"
+  (interactive)
+  (marc--marcedit-get-files-and-convert
+   "json2marc" "JSON file" "json" "MARC file" "mrc"
+   (transient-args 'marc-marcedit-convert)))
 
 ;;;###autoload
 (transient-define-prefix marc-marcedit-convert ()
@@ -326,12 +360,12 @@ ARGS are additional flags from the transient."
    ("-8" "MARC-8 mode" "-marc8")
    ("-p" "Continue on errors" "-pd")]
   ["Convert"
-   ("b" "MarcBreaker (MARC -> MRK)" marc--marcedit-break)
-   ("m" "MarcMaker (MRK -> MARC)" marc--marcedit-make)
-   ("x" "MARC -> MARCXML" marc--marcedit-marcxml)
-   ("X" "MARCXML -> MARC" marc--marcedit-xmlmarc)
-   ("j" "MARC -> JSON" marc--marcedit-marc2json)
-   ("J" "JSON -> MARC" marc--marcedit-json2marc)])
+   (marc-marcedit-break)
+   (marc-marcedit-make)
+   (marc-marcedit-marcxml)
+   (marc-marcedit-xmlmarc)
+   (marc-marcedit-marc2json)
+   (marc-marcedit-json2marc)])
 
 ;;; Major Mode Definition
 
